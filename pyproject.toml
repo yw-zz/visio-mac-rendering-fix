@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "visio-mac-rendering-fix"
-version = "0.1.0"
-description = "Fix Visio (EMF+) figures that render wrong in Word/PowerPoint/Excel for Mac: italic labels, solid blocks instead of transparency."
+version = "0.2.0"
+description = "Fix Visio (EMF+) figures in Office files: wrong rendering in Office for Mac, and low-resolution pictures in Word PDF exports."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
 dependencies = ["fonttools>=4.0"]
-keywords = ["visio", "emf", "emf+", "office", "word", "powerpoint", "mac", "docx", "pptx"]
+keywords = ["visio", "emf", "emf+", "office", "word", "powerpoint", "mac", "docx", "pptx", "pdf", "resolution"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
@@ -20,10 +20,12 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-demo = ["python-docx", "python-pptx"]
+pdf = ["pymupdf>=1.23", "pillow>=9", "numpy"]
+demo = ["pillow>=9", "python-docx", "python-pptx"]
 
 [project.scripts]
 visio-mac-rendering-fix = "visio_mac_rendering_fix.cli:main"
+visio-pdf-hires = "visio_mac_rendering_fix.pdf_images:main"
 
 [project.urls]
 Homepage = "https://github.com/yw-zz/visio-mac-rendering-fix"

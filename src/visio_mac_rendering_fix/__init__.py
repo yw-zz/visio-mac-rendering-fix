@@ -1,5 +1,5 @@
-"""Fix Visio / EMF+ figures that render wrong in Office for Mac."""
-__version__ = '0.1.0'
+"""Fix Visio / EMF+ figures in Office files (Mac rendering, PDF picture resolution)."""
+__version__ = '0.2.0'
 
 from .emf import fix_emf, is_dual_emf
 from .fonts import FontIndex

@@ -76,7 +76,9 @@ class StructureTests(unittest.TestCase):
         self.check_valid(out)
         self.assertEqual(st.get('transparency_filled'), 1)
         # no raster-op blits left; EMF+ layer and every GetDC-section record untouched
-        self.assertFalse([1 for t, off, _ in gdi_records(out) if t == 76])
+        rop = lambda b: [struct.unpack_from('<I', b, o + 40)[0] for t, o, _ in gdi_records(b) if t == 76]
+        self.assertTrue(rop(src))
+        self.assertFalse(rop(out))
         self.assertEqual(plus_types(src), plus_types(out))
         dc = lambda b: [b[o:o + struct.unpack_from('<I', b, o + 4)[0]] for t, o, d in gdi_records(b) if d]
         self.assertEqual(dc(src), dc(out))
@@ -86,13 +88,15 @@ class StructureTests(unittest.TestCase):
         src = make_demo.make_emf()
         out = fix_emf(src, FONTS, stats=(st := {}))
         self.check_valid(out)
-        self.assertEqual(st.get('text_converted'), 2)
+        runs = sum(1 for t, _, _ in gdi_records(src) if t == 84)
+        self.assertGreater(runs, 10)
+        self.assertEqual(st.get('text_converted'), runs)
         # no text records left; each run became an EMF+ path fill plus a GDI copy outside GetDC
         recs = gdi_records(out)
         self.assertFalse([1 for t, _, _ in recs if t == 84])
-        self.assertEqual(plus_types(out).count(0x4014), 2)
+        self.assertEqual(plus_types(out).count(0x4014), runs)
         fills_outside = [1 for t, _, d in recs if t == 62 and not d]
-        self.assertGreaterEqual(len(fills_outside), 2)
+        self.assertGreaterEqual(len(fills_outside), runs)
         self.assertEqual(struct.unpack_from('<H', out, 56)[0], struct.unpack_from('<H', src, 56)[0] + 1)
 
     @unittest.skipUnless(HAVE_FONT, 'Arial Narrow not installed')

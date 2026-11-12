@@ -7,3 +7,4 @@ dist/
 *_macfix.*
 ~$*
 .DS_Store
+examples/demo.emf
