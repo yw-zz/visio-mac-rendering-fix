@@ -3,7 +3,7 @@
 Two small tools for Visio figures in Word / PowerPoint / Excel files:
 
 - **`visio-mac-rendering-fix`**: makes figures that render wrong in **Office for Mac** look right, without changing how they look on Windows.
-- **`visio-pdf-hires`**: puts full-resolution photos and screenshots back into a PDF exported from Word, which otherwise shrinks them to about 200 ppi.
+- **`visio-pdf-hires`**: makes a PDF of a Word document with its photos and screenshots at full resolution. Word's own PDF export shrinks them to about 200 ppi.
 
 The example figure below is in `examples/` (a block diagram with a translucent highlight, plus a pasted oscilloscope capture), and the screenshots are from Word for Mac.
 
@@ -66,10 +66,18 @@ Only the EMF images inside the Office file are rewritten; text, layout and every
 ## visio-pdf-hires
 
 ```bash
-visio-pdf-hires paper.pdf paper.docx
+visio-pdf-hires paper.docx
 ```
 
-Give it the PDF exported from Word and the `.docx` (or `.pptx`) it came from. It writes `paper_hires.pdf`.
+On a Mac with Word installed, that's all: it writes `paper_hires.pdf` next to the document. Behind the scenes Word exports a temporary copy of the file, with tracked changes applied and markup hidden (`--keep-markup` keeps your current markup view instead), and then the pictures are restored. Your open documents are never touched; the copy and its PDF are deleted afterwards. It also prints how many pages Word laid the document out on, handy for page limits. The first run asks you to allow your terminal to control Microsoft Word (System Settings › Privacy & Security › Automation).
+
+On Windows, or for a `.pptx` / `.xlsx`, export the PDF yourself and give it both files, in either order:
+
+```bash
+visio-pdf-hires paper.docx paper.pdf
+```
+
+### How it works
 
 Word's PDF export resamples every bitmap inside an EMF figure (photos, scope or simulator screenshots pasted into Visio) to about 200 ppi and often JPEG-compresses it, so thin traces turn blurry and blocky. The originals are still stored losslessly in each figure's EMF+ layer inside the `.docx`. The tool:
 
@@ -78,6 +86,8 @@ Word's PDF export resamples every bitmap inside an EMF figure (photos, scope or 
 3. swaps in the original pixels: screenshots and line art stay lossless, photos become high-quality JPEG, and transparency masks are kept.
 
 Vector content (lines, shapes, text) is never touched, nor are pictures it cannot match confidently (`--min-similarity`, default 0.97). The page layout is unchanged; only the pictures get sharper. The PDF grows by the size of the restored pictures.
+
+Only pictures inside EMF figures are restored. A picture pasted directly into Word keeps the resolution Word exported it at.
 
 ## Try it
 
@@ -88,9 +98,9 @@ python3 examples/make_demo.py examples
 visio-mac-rendering-fix examples/demo.docx examples/demo.pptx
 ```
 
-Open `demo.docx` and `demo_macfix.docx` in Word for Mac to compare. Export `demo.docx` to PDF from Word, then run `visio-pdf-hires demo.pdf examples/demo.docx` and zoom into the scope capture.
+Open `demo.docx` and `demo_macfix.docx` in Word for Mac to compare. Then run `visio-pdf-hires examples/demo.docx` and zoom into the scope capture in `examples/demo_hires.pdf`.
 
-Tests: `python3 -m unittest discover tests`
+Tests: `python3 -m unittest discover tests` (add `VPH_TEST_WORD=1` to also test the Word export, which opens Word)
 
 Tested with Office for Mac 16.x (Word, PowerPoint) on real Visio figures, and with Word for Windows for the rendering fix.
 

@@ -70,5 +70,48 @@ class RestoreTests(unittest.TestCase):
             self.assertEqual(pdf_images.restore_pdf_images(pdf, src, out, log=lambda *_: None), [])
 
 
+@unittest.skipIf(fitz is None or not pdf_images.HAVE_DEPS, 'PyMuPDF / Pillow / numpy not installed')
+class CommandLineTests(unittest.TestCase):
+    def _files(self, d):
+        emf = make_demo.make_emf()
+        small = make_demo.scope_capture().resize((393, 221), Image.LANCZOS)
+        buf = io.BytesIO(); small.save(buf, 'PNG')
+        src, pdf = os.path.join(d, 'a.docx'), os.path.join(d, 'a.pdf')
+        with zipfile.ZipFile(src, 'w') as z:
+            z.writestr('word/media/image1.emf', emf)
+        doc = fitz.open(); doc.new_page().insert_image(fitz.Rect(300, 100, 448, 183), stream=buf.getvalue())
+        doc.save(pdf)
+        return src, pdf
+
+    def test_either_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            src, pdf = self._files(d)
+            self.assertEqual(pdf_images.main([src, pdf, '-q']), 0)
+            self.assertTrue(os.path.exists(os.path.join(d, 'a_hires.pdf')))
+            out2 = os.path.join(d, 'b.pdf')
+            self.assertEqual(pdf_images.main([pdf, src, '-o', out2, '-q']), 0)
+            self.assertTrue(os.path.exists(out2))
+
+    def test_bad_arguments(self):
+        with tempfile.TemporaryDirectory() as d:
+            src, pdf = self._files(d)
+            for args in ([pdf], [pdf, pdf], [src, src], [src, pdf, 'x.txt']):
+                with self.assertRaises(SystemExit):
+                    pdf_images.main(args + ['-q'])
+
+
+@unittest.skipUnless(os.environ.get('VPH_TEST_WORD') == '1',
+                     'drives Microsoft Word for Mac; set VPH_TEST_WORD=1 to run')
+class WordExportTests(unittest.TestCase):
+    def test_export_demo(self):
+        from visio_mac_rendering_fix import word_export
+        with tempfile.TemporaryDirectory() as d:
+            make_demo.main(d)
+            pdf = os.path.join(d, 'demo.pdf')
+            pages = word_export.export_docx_to_pdf(os.path.join(d, 'demo.docx'), pdf)
+            self.assertEqual(pages, 1)
+            self.assertEqual(fitz.open(pdf).page_count, 1)
+
+
 if __name__ == '__main__':
     unittest.main()

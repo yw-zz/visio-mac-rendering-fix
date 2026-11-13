@@ -11,7 +11,9 @@ on the page is untouched, so the layout is identical; only sharpness changes.
      page back into the figure, using the images matched in step 1 to calibrate the mapping.
 Every replacement must look like the image it replaces (correlation >= --min-similarity).
 
-Command: visio-pdf-hires exported.pdf source.docx [-o out.pdf]
+Commands:
+  visio-pdf-hires paper.docx                 export with Word for Mac, then restore (-> paper_hires.pdf)
+  visio-pdf-hires paper.docx exported.pdf    restore a PDF you exported yourself (any OS, any order)
 Needs the optional extra: pip install 'visio-mac-rendering-fix[pdf]' (PyMuPDF, Pillow, numpy).
 """
 import argparse
@@ -326,25 +328,57 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
     return records
 
 
+OFFICE_EXT = ('.docx', '.docm', '.dotx', '.dotm', '.pptx', '.pptm', '.potx', '.potm',
+              '.ppsx', '.ppsm', '.xlsx', '.xlsm', '.xltx', '.xltm')
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog='visio-pdf-hires', description=__doc__.split('\n\n')[0])
-    ap.add_argument('pdf', help='PDF exported from the Office file')
-    ap.add_argument('source', help='the .docx / .pptx / .xlsx it was exported from')
-    ap.add_argument('-o', '--output', help='default: <pdf name>_hires.pdf')
+    ap = argparse.ArgumentParser(
+        prog='visio-pdf-hires', description=__doc__.split('\n\n')[0],
+        epilog='With only a .docx, the PDF is exported by Word for Mac from a temporary copy '
+               '(tracked changes applied, markup hidden); your open documents are not touched.')
+    ap.add_argument('files', nargs='+', metavar='FILE',
+                    help='the .docx (or .pptx/.xlsx), and optionally the PDF exported from it')
+    ap.add_argument('-o', '--output', help='default: <name>_hires.pdf next to the input')
+    ap.add_argument('--keep-markup', action='store_true',
+                    help='when exporting with Word, keep the current tracked-change markup view')
     ap.add_argument('--min-similarity', type=float, default=0.97,
                     help='how closely a replacement must resemble the image it replaces (default 0.97)')
     ap.add_argument('-q', '--quiet', action='store_true')
     a = ap.parse_args(argv)
+    log = (lambda *_: None) if a.quiet else print
     if not HAVE_DEPS:
         print(MISSING_DEPS, file=sys.stderr)
         return 2
-    out = a.output or os.path.splitext(a.pdf)[0] + '_hires.pdf'
+    pdfs = [f for f in a.files if f.lower().endswith('.pdf')]
+    srcs = [f for f in a.files if f.lower().endswith(OFFICE_EXT)]
+    if len(srcs) != 1 or len(pdfs) > 1 or len(a.files) != len(srcs) + len(pdfs):
+        ap.error('give one Office file (.docx/.pptx/.xlsx), optionally followed by the PDF exported from it')
+    source = srcs[0]
+    out = a.output or os.path.splitext(pdfs[0] if pdfs else source)[0] + '_hires.pdf'
+    tmpdir = None
     try:
-        restore_pdf_images(a.pdf, a.source, out, a.min_similarity,
-                           log=(lambda *_: None) if a.quiet else print)
-    except (ValueError, OSError, zipfile.BadZipFile) as e:
+        if pdfs:
+            pdf = pdfs[0]
+        else:
+            if not source.lower().endswith(('.docx', '.docm')):
+                ap.error('automatic export works for Word files only; export the PDF yourself and pass it too')
+            from . import word_export
+            import tempfile
+            tmpdir = tempfile.mkdtemp(prefix='visio-pdf-hires-')
+            pdf = os.path.join(tmpdir, 'word_export.pdf')
+            log('exporting with Microsoft Word (temporary copy)...')
+            pages = word_export.export_docx_to_pdf(source, pdf, markup=a.keep_markup)
+            if pages:
+                log(f'  Word laid the document out on {pages} page(s)')
+        restore_pdf_images(pdf, source, out, a.min_similarity, log=log)
+    except Exception as e:                      # ExportError, ValueError, OSError, BadZipFile
         print(f'error: {e}', file=sys.stderr)
         return 1
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
     return 0
 
 

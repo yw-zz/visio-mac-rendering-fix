@@ -8,3 +8,4 @@ dist/
 ~$*
 .DS_Store
 examples/demo.emf
+*_hires.pdf
