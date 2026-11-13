@@ -3,7 +3,7 @@
 Two small tools for Visio figures in Word / PowerPoint / Excel files:
 
 - **`visio-mac-rendering-fix`**: makes figures that render wrong in **Office for Mac** look right, without changing how they look on Windows.
-- **`visio-pdf-hires`**: makes a PDF of a Word document with its photos and screenshots at full resolution. Word's own PDF export shrinks them to about 200 ppi.
+- **`visio-pdf-hires`**: makes a PDF of a Word document with its photos and screenshots at full resolution, and its SVG pictures (tables, diagrams) as sharp vectors. Word for Mac's own PDF export shrinks pictures to about 200 ppi and turns SVGs into blurry bitmaps.
 
 The example figure below is in `examples/` (a block diagram with a translucent highlight, plus a pasted oscilloscope capture), and the screenshots are from Word for Mac.
 
@@ -87,7 +87,9 @@ Word's PDF export resamples every bitmap inside an EMF figure (photos, scope or 
 
 Vector content (lines, shapes, text) is never touched, nor are pictures it cannot match confidently (`--min-similarity`, default 0.97). The page layout is unchanged; only the pictures get sharper. The PDF grows by the size of the restored pictures.
 
-Only pictures inside EMF figures are restored. A picture pasted directly into Word keeps the resolution Word exported it at.
+**SVG pictures** (for example a table pasted as SVG) are stored in the `.docx` as the SVG plus a PNG fallback, and Word for Mac exports them as a ~200 ppi bitmap. The tool matches that bitmap to the fallback and puts the SVG back in its place as vectors: shapes are drawn by MuPDF's SVG renderer, and text is drawn by the tool with the real installed fonts (embedded, selectable and searchable), because MuPDF's SVG renderer only has the standard PDF fonts and would set e.g. Arial Narrow in a wider substitute. Supported text features: `text-anchor`, `tspan` with `dx`/`dy`/font changes (sub- and superscripts), `transform` (rotated labels), and per-character font fallback along the `font-family` list. Cropped or rotated SVG pictures are left as they are.
+
+Other pictures pasted directly into Word (plain PNG/JPEG) keep the resolution Word exported them at.
 
 ## Try it
 

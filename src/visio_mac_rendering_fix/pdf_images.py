@@ -225,6 +225,49 @@ def write_image(doc, xref, src, smask=0):
     return kind
 
 
+def svg_pictures(z):
+    """SVG pictures in an Office package: [{name, svg (bytes), fallback (PIL RGB)}].
+    Office stores each as <a:blip r:embed=PNG> with an <asvg:svgBlip r:embed=SVG> extension.
+    Cropped pictures (a:srcRect) are skipped, since the PDF shows only part of them."""
+    import posixpath
+    import re as _re
+    out, seen = [], set()
+    names = set(z.namelist())
+    for part in sorted(names):
+        if not part.endswith('.xml') or '/_rels/' in part:
+            continue
+        xml = z.read(part).decode('utf8', 'replace')
+        if 'svgBlip' not in xml:
+            continue
+        rels_name = posixpath.join(posixpath.dirname(part), '_rels', posixpath.basename(part) + '.rels')
+        if rels_name not in names:
+            continue
+        rels = {}
+        for rel in _re.findall(r'<Relationship\b[^>]*>', z.read(rels_name).decode('utf8', 'replace')):
+            i, t = _re.search(r'Id="([^"]+)"', rel), _re.search(r'Target="([^"]+)"', rel)
+            if i and t:
+                rels[i.group(1)] = t.group(1)
+        for m in _re.finditer(r'<a:blip\b[^>]*?r:embed="([^"]+)"[^>]*>(.*?)</a:blip>(.*?)</(?:pic:|p:|xdr:)?blipFill>', xml, _re.S):
+            png_id, inner, after = m.groups()
+            svg_id = _re.search(r'svgBlip\b[^>]*?r:embed="([^"]+)"', inner)
+            if not svg_id or png_id not in rels or svg_id.group(1) not in rels:
+                continue
+            crop = _re.search(r'<a:srcRect\b([^>]*)/>', after)
+            if crop and _re.search(r'\b[lrtb]="-?[1-9]', crop.group(1)):
+                continue
+            png = posixpath.normpath(posixpath.join(posixpath.dirname(part), rels[png_id]))
+            svg = posixpath.normpath(posixpath.join(posixpath.dirname(part), rels[svg_id.group(1)]))
+            if (png, svg) in seen or png not in names or svg not in names:
+                continue
+            seen.add((png, svg))
+            try:
+                fb = on_white(Image.open(io.BytesIO(z.read(png))))
+            except Exception:
+                continue
+            out.append(dict(name=posixpath.basename(svg), svg=z.read(svg), fallback=fb))
+    return out
+
+
 # ------------------------------------------------------------------ main
 def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
     """Write `out`: `pdf` with its images replaced by the full-resolution originals found in
@@ -244,7 +287,9 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
                     dr['full'] = on_white(dr['rgba'])
                 if draws:
                     figures[n] = draws
-    log(f'{sum(len(v) for v in figures.values())} original images in {len(figures)} figures')
+        svgs = svg_pictures(z)
+    log(f'{sum(len(v) for v in figures.values())} original images in {len(figures)} figures'
+        + (f', {len(svgs)} SVG picture(s)' if svgs else ''))
 
     doc = fitz.open(pdf)
     todo = []                                     # (page, xref, rect, pdf image)
@@ -322,6 +367,37 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
             replace(pno, xref, rect, pim, ext, smask, best[2], best[0], label + f', position match {best[4]:.2f}')
         elif best and best[0] > 0.5:
             log(f'  page {pno + 1}: {pim.width}x{pim.height} closest original only {best[0]:.3f}, left as is')
+
+    # pass 3: SVG pictures that Word rasterised -> back to vectors (shapes + real fonts)
+    if svgs:
+        from .svg_vector import svg_to_pdf
+        from .fonts import FontIndex
+        fonts, rendered = None, {}
+        for pno, xref, rect, pim, ext, smask in todo:
+            if xref in done:
+                continue
+            best = max(((similarity(pim, sv['fallback']), i) for i, sv in enumerate(svgs)),
+                       key=lambda x: x[0], default=None)
+            if not best or best[0] < min_similarity:
+                continue
+            score, i = best
+            sv, page = svgs[i], doc[pno]
+            placements = page.get_image_rects(xref, transform=True)
+            if any(not (abs(m.b) < 1e-6 and abs(m.c) < 1e-6 and m.a > 0 and m.d > 0) for _, m in placements):
+                log(f'  page {pno + 1}: SVG picture {sv["name"]} is rotated or flipped, left as is')
+                continue
+            if i not in rendered:
+                fonts = fonts or FontIndex()
+                rendered[i] = svg_to_pdf(sv['svg'], fonts)
+            page.delete_image(xref)                       # leaves an invisible 1x1 placeholder
+            for r, _ in placements:
+                page.show_pdf_page(r, rendered[i], 0, keep_proportion=False)
+            fnames = sorted({f[3] for f in rendered[i][0].get_fonts()})
+            records.append(dict(page=pno + 1, xref=xref, old=pim.size, new='vector', encoding='vector',
+                                source=sv['name'], score=score))
+            log(f'  page {pno + 1}: {pim.width}x{pim.height} {ext} (~{pim.width / (rect.width / 72):.0f} ppi) -> '
+                f'vector  [{sv["name"]}, match {score:.3f}; fonts: {", ".join(fnames)}]')
+            done[xref] = True
 
     doc.save(out, garbage=3, deflate=True)
     log(f'replaced {len(done)} image(s); wrote {out}')

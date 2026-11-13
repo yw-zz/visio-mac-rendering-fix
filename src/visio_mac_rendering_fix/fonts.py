@@ -64,6 +64,19 @@ class FontIndex:
                             continue
         self._index = idx
 
+    def font_bytes(self, family, bold, italic):
+        """The font file's bytes (a single font, extracted from a collection if needed)."""
+        if self._index is None:
+            self._build()
+        path, num = self._index[(family.lower(), bold, italic)]
+        if not path.lower().endswith(('.ttc', '.otc')):
+            with open(path, 'rb') as f:
+                return f.read()
+        import io
+        buf = io.BytesIO()
+        TTFont(path, fontNumber=num).save(buf)
+        return buf.getvalue()
+
     def get(self, family, bold, italic):
         """Return (TTFont, glyphset, cmap) for an exact style match, or None."""
         if self._index is None:
