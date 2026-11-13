@@ -31,6 +31,14 @@ Writes `paper_macfix.docx` next to the input; the input is never modified. It ac
 
 Options: `-o OUT` names the output (single input), `--no-text` / `--no-transparency` apply only one of the two fixes, `--no-glyph-index` leaves labels stored as glyph indices alone, `--font-dir DIR` searches other font folders.
 
+**The conversion is reversible**, so it's fine to keep working in the `_macfix` copy. Each changed figure keeps its original records inside comments that renderers ignore, and
+
+```bash
+visio-mac-rendering-fix --undo paper_macfix.docx
+```
+
+writes `paper_macfix_original.docx` with every figure restored byte for byte. `visio-pdf-hires` does this automatically before exporting, so PDFs always get real figure text. Files converted by version 0.4 or earlier kept no undo data; add `--originals OLDER.docx` (any unconverted copy of the document) to `--undo` or to `visio-pdf-hires`, and each figure is recovered from the original that converts to exactly the same bytes.
+
 ### Why figures look wrong on the Mac
 
 Visio puts each figure into the Office file as an OLE object whose preview is a *dual* EMF: a modern **EMF+** layer plus an old **GDI** fallback layer.
@@ -58,7 +66,7 @@ Only the EMF images inside the Office file are rewritten; text, layout and every
 
 ### Limitations
 
-- Figure text becomes vector outlines, so it can no longer be selected or searched in an exported PDF. It looks the same.
+- In the converted file, figure text is vector outlines, so a PDF exported directly from it (File › Save As › PDF) has unselectable figure text. Make PDFs with `visio-pdf-hires` instead, which exports from the restored originals.
 - On the Mac **screen** only, translucent shapes become opaque light fills, so anything underneath them is hidden there. Windows and PDF export keep the real transparency.
 - Text in fonts that are not installed on the machine running the tool is left as text (the tool lists those fonts).
 - Only dual EMF+ images (what Visio and other GDI+ apps produce) are changed. Plain EMF, WMF, and `.emz` previews are left alone.
@@ -69,7 +77,7 @@ Only the EMF images inside the Office file are rewritten; text, layout and every
 visio-pdf-hires paper.docx
 ```
 
-On a Mac with Word installed, that's all: it writes `paper_hires.pdf` next to the document. Behind the scenes Word exports a temporary copy of the file, with tracked changes applied and markup hidden (`--keep-markup` keeps your current markup view instead), and then the pictures are restored. Your open documents are never touched; the copy and its PDF are deleted afterwards. It also prints how many pages Word laid the document out on, handy for page limits. The first run asks you to allow your terminal to control Microsoft Word (System Settings › Privacy & Security › Automation).
+On a Mac with Word installed, that's all: it writes `paper_hires.pdf` next to the document. It works on `_macfix` copies too: figures converted by `visio-mac-rendering-fix` are restored first, so their text is real, selectable text in the PDF. Behind the scenes Word exports a temporary copy of the file, with tracked changes applied and markup hidden (`--keep-markup` keeps your current markup view instead), and then the pictures are restored. Your open documents are never touched; the copy and its PDF are deleted afterwards. It also prints how many pages Word laid the document out on, handy for page limits. The first run asks you to allow your terminal to control Microsoft Word (System Settings › Privacy & Security › Automation).
 
 On Windows, or for a `.pptx` / `.xlsx`, export the PDF yourself and give it both files, in either order:
 

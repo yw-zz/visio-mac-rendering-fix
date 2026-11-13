@@ -4,7 +4,7 @@ import sys
 
 from . import __version__
 from .fonts import FontIndex
-from .package import SUPPORTED, default_output, fix_package
+from .package import SUPPORTED, default_output, default_undo_output, fix_package, unfix_package
 
 
 def main(argv=None):
@@ -22,6 +22,11 @@ def main(argv=None):
     p.add_argument('--no-transparency', action='store_true', help='leave stipple transparency as is')
     p.add_argument('--no-glyph-index', action='store_true',
                    help='skip text stored as glyph indices (use if such labels come out as wrong characters)')
+    p.add_argument('--undo', action='store_true',
+                   help='restore the original figures (default output: <name>_original.<ext>)')
+    p.add_argument('--originals', action='append', metavar='FILE',
+                   help='with --undo: an older, unconverted copy of the document, used to recover figures '
+                        'converted by version 0.4 or earlier (which kept no undo data); repeatable')
     p.add_argument('-q', '--quiet', action='store_true')
     p.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     a = p.parse_args(argv)
@@ -34,6 +39,24 @@ def main(argv=None):
         if not src.lower().endswith(SUPPORTED):
             print(f'skip {src}: not an Office Open XML file ({", ".join(SUPPORTED)})', file=sys.stderr)
             status = 1
+            continue
+        if a.undo:
+            dst = a.output or default_undo_output(src)
+            try:
+                report = unfix_package(src, dst, originals=a.originals, fonts=fonts)
+            except Exception as e:
+                print(f'error {src}: {e}', file=sys.stderr)
+                status = 1
+                continue
+            if not a.quiet:
+                for part, what in sorted(report.items()):
+                    print(f'  {part}: {what}')
+                if not report:
+                    print(f'{src}: no converted figures found')
+                if any(v.startswith('converted') for v in report.values()):
+                    print('  some figures were converted by version 0.4 or earlier and kept no undo data;\n'
+                          '  pass --originals OLDER.docx (an unconverted copy) to recover them')
+                print(f'wrote {dst}')
             continue
         dst = a.output or default_output(src)
         try:

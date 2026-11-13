@@ -416,6 +416,9 @@ def main(argv=None):
     ap.add_argument('files', nargs='+', metavar='FILE',
                     help='the .docx (or .pptx/.xlsx), and optionally the PDF exported from it')
     ap.add_argument('-o', '--output', help='default: <name>_hires.pdf next to the input')
+    ap.add_argument('--originals', action='append', metavar='FILE',
+                    help='an older, unconverted copy of the document, to restore real figure text in figures '
+                         'converted by visio-mac-rendering-fix 0.4 or earlier; repeatable')
     ap.add_argument('--keep-markup', action='store_true',
                     help='when exporting with Word, keep the current tracked-change markup view')
     ap.add_argument('--min-similarity', type=float, default=0.97,
@@ -434,14 +437,31 @@ def main(argv=None):
     out = a.output or os.path.splitext(pdfs[0] if pdfs else source)[0] + '_hires.pdf'
     tmpdir = None
     try:
+        import tempfile
+        from .package import unfix_package
+        tmpdir = tempfile.mkdtemp(prefix='visio-pdf-hires-')
+        # figures converted for the Mac screen carry text as outlines: put the originals back
+        # so the PDF gets real, selectable figure text
+        original = os.path.join(tmpdir, 'original' + os.path.splitext(source)[1])
+        report = unfix_package(source, original, originals=a.originals)
+        restored = sum(1 for v in report.values() if v in ('undone', 'recovered'))
+        missing = [k for k, v in report.items() if v.startswith('converted')]
+        if restored:
+            log(f'restored the original text of {restored} figure(s) converted by visio-mac-rendering-fix')
+        if missing:
+            log(f'warning: {len(missing)} figure(s) have their text as outlines (converted by version 0.4 or '
+                f'earlier); their text will not be selectable. Pass --originals OLDER.docx to recover them.')
+        if restored:
+            source = original
+            if pdfs:
+                log('warning: the PDF you passed was exported from the converted document, so its figure '
+                    'text is outlines; give only the .docx to export a fresh PDF with real text')
         if pdfs:
             pdf = pdfs[0]
         else:
             if not source.lower().endswith(('.docx', '.docm')):
                 ap.error('automatic export works for Word files only; export the PDF yourself and pass it too')
             from . import word_export
-            import tempfile
-            tmpdir = tempfile.mkdtemp(prefix='visio-pdf-hires-')
             pdf = os.path.join(tmpdir, 'word_export.pdf')
             log('exporting with Microsoft Word (temporary copy)...')
             pages = word_export.export_docx_to_pdf(source, pdf, markup=a.keep_markup)

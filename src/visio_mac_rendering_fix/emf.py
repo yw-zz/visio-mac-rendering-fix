@@ -242,6 +242,66 @@ def _text_records(ops, color, H, xf, worg, vorg, save_idx):
     return plus_comment(plus) + b''.join(gdi) + plus_comment([plus_rec(0x4004, 0)])
 
 
+# ------------------------------------------------------------------ undo support
+# Every record fix_emf() replaces or drops is kept, verbatim, inside a private GDI comment
+# ("VMRF" + kind), which all EMF/EMF+ players skip:
+#   HEAD <original header record>             right after the header
+#   BEGN <original record>  ...new records...  END_
+# unfix_emf() puts the originals back and returns the exact original bytes.
+MARK = b'VMRF0001'
+
+def _marker(kind, payload=b''):
+    data = MARK + kind + payload
+    data += b'\x00' * (-len(data) % 4)
+    return rec(EMR_GDICOMMENT, struct.pack('<I', len(MARK) + 4 + len(payload)) + data)
+
+def _marker_kind(b, off):
+    """('HEAD'|'BEGN'|'END_', payload) for a marker record at off, else None."""
+    t, sz = struct.unpack_from('<II', b, off)
+    if t != EMR_GDICOMMENT or b[off + 12:off + 20] != MARK:
+        return None
+    n = struct.unpack_from('<I', b, off + 8)[0]
+    return b[off + 20:off + 24].decode('ascii', 'replace'), b[off + 24:off + 12 + n]
+
+def is_fixed_emf(data):
+    """True if the EMF was rewritten by fix_emf() with undo data."""
+    b = bytes(data)
+    r = parse(b)
+    return len(r) > 1 and (_marker_kind(b, r[1][1]) or ('',))[0] == 'HEAD'
+
+def unfix_emf(data):
+    """Exact original bytes of an EMF rewritten by fix_emf() (repeatedly, if it was fixed more
+    than once); unchanged input if it has no undo data."""
+    b = bytes(data)
+    while is_fixed_emf(b):
+        b = _unfix_once(b)
+    return b
+
+def strip_markers(data):
+    """fix_emf() output without the undo markers: what versions <= 0.4 produced."""
+    b = bytes(data)
+    recs = parse(b)
+    keep = [b[off:off + sz] for t, off, sz in recs if not _marker_kind(b, off)]
+    body = bytearray(b''.join(keep))
+    struct.pack_into('<I', body, 48, len(body))
+    struct.pack_into('<I', body, 52, len(keep))
+    return bytes(body)
+
+def _unfix_once(b):
+    recs = parse(b)
+    out, skipping = [], False
+    head = _marker_kind(b, recs[1][1])[1]
+    for t, off, sz in recs[2:]:
+        mk = _marker_kind(b, off)
+        if mk and mk[0] == 'BEGN':
+            out.append(mk[1]); skipping = True
+        elif mk and mk[0] == 'END_':
+            skipping = False
+        elif not skipping:
+            out.append(b[off:off + sz])
+    return head + b''.join(out)
+
+
 def fix_emf(data, fonts, text=True, transparency=True, glyph_index=True, stats=None):
     """Return the rewritten EMF bytes. `fonts` is a FontIndex. Non-dual EMFs are returned as is."""
     b = bytes(data)
@@ -258,6 +318,13 @@ def fix_emf(data, fonts, text=True, transparency=True, glyph_index=True, stats=N
     stipple, stipple_brush_live, save_idx = None, False, 0x7EAD0000
     recs = parse(b)
     out = []
+
+    def swap(original, new):
+        """Replace an original record by `new`, keeping the original in a marker for undo."""
+        out.append(_marker(b'BEGN', original))
+        out.extend(new)
+        out.append(_marker(b'END_'))
+
     i = 0
     while i < len(recs):
         t, off, sz = recs[i]
@@ -302,13 +369,15 @@ def fix_emf(data, fonts, text=True, transparency=True, glyph_index=True, stats=N
             elif kind == 'brush':
                 cur_brush = val
             if stipple is not None and kind == 'pattern':
+                new = []
                 if not stipple_brush_live:
-                    out.append(rec(EMR_CREATEBRUSHINDIRECT, struct.pack('<IIII', H, 0, stipple, 0)))
+                    new.append(rec(EMR_CREATEBRUSHINDIRECT, struct.pack('<IIII', H, 0, stipple, 0)))
                     stipple_brush_live = True
-                out.append(rec(EMR_SELECTOBJECT, struct.pack('<I', H)))
+                new.append(rec(EMR_SELECTOBJECT, struct.pack('<I', H)))
+                swap(r, new)
                 continue
         elif t == EMR_SETROP2 and stipple is not None:
-            out.append(rec(EMR_SETROP2, struct.pack('<I', R2_COPYPEN)))
+            swap(r, [rec(EMR_SETROP2, struct.pack('<I', R2_COPYPEN))])
             continue
         elif t == EMR_SETTEXTCOLOR:
             text_color = struct.unpack_from('<I', b, off + 8)[0]
@@ -318,10 +387,12 @@ def fix_emf(data, fonts, text=True, transparency=True, glyph_index=True, stats=N
             rop = struct.unpack_from('<I', b, off + 40)[0]
             if rop == PATINVERT and stipple is not None:          # closing XOR of the stipple trick
                 stipple = None
+                new = []
                 if stipple_brush_live:
-                    out.append(rec(EMR_SELECTOBJECT, struct.pack('<I', WHITE_BRUSH)))
-                    out.append(rec(EMR_DELETEOBJECT, struct.pack('<I', H)))
+                    new.append(rec(EMR_SELECTOBJECT, struct.pack('<I', WHITE_BRUSH)))
+                    new.append(rec(EMR_DELETEOBJECT, struct.pack('<I', H)))
                     stipple_brush_live = False
+                swap(r, new)
                 st['transparency_filled'] = st.get('transparency_filled', 0) + 1
                 continue
             if rop == PATINVERT:                                   # opening XOR: path-mask variant?
@@ -336,15 +407,17 @@ def fix_emf(data, fonts, text=True, transparency=True, glyph_index=True, stats=N
                     j += 1
                 if kinds and kinds[-1] == PATINVERT and ('rop2', R2_MASKPEN) in kinds and cur_brush is not None:
                     stipple = _blend_white(cur_brush)
+                    swap(r, [])
                     continue
             if rop in (PATINVERT, PATAND):
+                swap(r, [])
                 st['transparency_dropped'] = st.get('transparency_dropped', 0) + 1
                 continue
         elif t == EMR_EXTTEXTOUTW and text and in_dc:
             ops = _glyph_ops(b, off, cur_font, align, fonts, glyph_index)
             if ops is not None:
+                swap(r, [_text_records(ops, text_color, H, xf, worg, vorg, save_idx)] if ops else [])
                 if ops:
-                    out.append(_text_records(ops, text_color, H, xf, worg, vorg, save_idx))
                     save_idx += 1
                 st['text_converted'] = st.get('text_converted', 0) + 1
                 continue
@@ -354,7 +427,8 @@ def fix_emf(data, fonts, text=True, transparency=True, glyph_index=True, stats=N
         out.append(r)
     if not (st.get('text_converted') or st.get('transparency_filled') or st.get('transparency_dropped')):
         return b
-    body = bytearray(b''.join(out))
+    hdr_size = recs[0][2]
+    body = bytearray(out[0] + _marker(b'HEAD', b[:hdr_size]) + b''.join(out[1:]))
     struct.pack_into('<I', body, 48, len(body))           # nBytes
     struct.pack_into('<H', body, 56, nhandles + 1)        # nHandles
     struct.pack_into('<I', body, 52, len(parse(bytes(body))))  # nRecords
