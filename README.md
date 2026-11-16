@@ -98,7 +98,7 @@ Vector content (lines, shapes, text) is never touched, nor are pictures it canno
 
 **SVG pictures** (for example a table pasted as SVG) are stored in the `.docx` as the SVG plus a PNG fallback, and Word for Mac exports them as a ~200 ppi bitmap. The tool matches that bitmap to the fallback and puts the SVG back in its place as vectors: shapes are drawn by MuPDF's SVG renderer, and text is drawn by the tool with the real installed fonts (embedded, selectable and searchable), because MuPDF's SVG renderer only has the standard PDF fonts and would set e.g. Arial Narrow in a wider substitute. Supported text features: `text-anchor`, `tspan` with `dx`/`dy`/font changes (sub- and superscripts), `transform` (rotated labels), and per-character font fallback along the `font-family` list. Cropped or rotated SVG pictures are left as they are.
 
-Other pictures pasted directly into Word (plain PNG/JPEG) keep the resolution Word exported them at.
+**Plain pictures** placed directly in the document (PNG, JPEG, TIFF, BMP) are restored the same way, from the file stored in the `.docx`. Useful tip: if a Visio figure contains photos or renders that look bad on the Mac screen, export the figure as a high-resolution PNG and place that instead; `visio-pdf-hires` keeps it at full resolution in the PDF.
 
 ## Try it
 

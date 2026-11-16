@@ -305,6 +305,28 @@ def upgrade_draws(figures, originals, min_similarity, log):
                     f'{big.width}x{big.height} original from {o["name"]} ({label}, match {sc:.3f})')
 
 
+def plain_pictures(z, svgs=()):
+    """Raster pictures placed directly in an Office file (word/media, ppt/media, xl/media),
+    excluding SVG fallbacks. Returns [{name, rgba, full, raw, fmt}]."""
+    import posixpath
+    skip = {sv['fallback_part'] for sv in svgs or () if sv.get('fallback_part')}
+    out = []
+    for n in z.namelist():
+        if n in skip or '/media/' not in n or '/embeddings/' in n or not n.lower().endswith(
+                ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.gif')):
+            continue
+        raw = z.read(n)
+        try:
+            im = Image.open(io.BytesIO(raw)); im.load()
+        except Exception:
+            continue
+        if im.width * im.height < 40000:            # icons, bullets
+            continue
+        rgba = im.convert('RGBA')
+        out.append(dict(name=posixpath.basename(n), rgba=rgba, full=on_white(rgba), raw=raw, fmt=im.format))
+    return out
+
+
 def svg_pictures(z):
     """SVG pictures in an Office package: [{name, svg (bytes), fallback (PIL RGB)}].
     Office stores each as <a:blip r:embed=PNG> with an <asvg:svgBlip r:embed=SVG> extension.
@@ -344,7 +366,7 @@ def svg_pictures(z):
                 fb = on_white(Image.open(io.BytesIO(z.read(png))))
             except Exception:
                 continue
-            out.append(dict(name=posixpath.basename(svg), svg=z.read(svg), fallback=fb))
+            out.append(dict(name=posixpath.basename(svg), svg=z.read(svg), fallback=fb, fallback_part=png))
     return out
 
 
@@ -368,6 +390,7 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print, max_ppi
                     figures[n] = draws
         svgs = svg_pictures(z)
         originals = embedded_originals(z)
+        plain = plain_pictures(z, svgs)
     if originals:
         upgrade_draws(figures, originals, min_similarity, log)
     for draws in figures.values():
@@ -432,6 +455,16 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print, max_ppi
             replace(pno, xref, rect, pim, ext, smask, dr['rgba'], score,
                     fig.split('/')[-1] + (' via ' + dr['upgraded'] if dr.get('upgraded') else ''),
                     jpeg=dr.get('jpeg') if full_src else None, lossless=dr.get('lossless'))
+
+    # pass 1b: plain pictures placed directly in the document (PNG/JPEG/BMP/TIFF)
+    for pno, xref, rect, pim, ext, smask in todo:
+        if xref in done or not plain:
+            continue
+        best = max(((similarity(pim, pp['full']), pp) for pp in plain), key=lambda x: x[0], default=None)
+        if best and best[0] >= min_similarity:
+            score, pp = best
+            replace(pno, xref, rect, pim, ext, smask, pp['rgba'], score, pp['name'],
+                    jpeg=pp['raw'] if pp['fmt'] == 'JPEG' else None, lossless=pp['fmt'] != 'JPEG')
 
     # pass 2: map each remaining image's page rectangle back into the figure (handles crops)
     for pno, xref, rect, pim, ext, smask in todo:

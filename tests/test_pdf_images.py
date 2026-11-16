@@ -139,6 +139,23 @@ class EmbeddedOriginalTests(unittest.TestCase):
             self.assertEqual(recs[0]['new'][0], round(960 * 150 / (960 / (320 / 72))))   # 320 pt wide at 150 ppi
 
 
+@unittest.skipIf(fitz is None or not pdf_images.HAVE_DEPS, 'PyMuPDF / Pillow / numpy not installed')
+class PlainPictureTests(unittest.TestCase):
+    def test_restores_plain_png(self):
+        full = make_demo.scope_capture()
+        buf = io.BytesIO(); full.save(buf, 'PNG')
+        small = io.BytesIO(); full.resize((320, 180), Image.LANCZOS).convert('RGB').save(small, 'JPEG', quality=80)
+        with tempfile.TemporaryDirectory() as d:
+            src, pdf, out = (os.path.join(d, n) for n in ('a.docx', 'a.pdf', 'b.pdf'))
+            with zipfile.ZipFile(src, 'w') as z:
+                z.writestr('word/media/fig.png', buf.getvalue())
+            doc = fitz.open(); doc.new_page().insert_image(fitz.Rect(100, 100, 420, 280), stream=small.getvalue())
+            doc.save(pdf)
+            recs = pdf_images.restore_pdf_images(pdf, src, out, log=lambda *_: None)
+            self.assertEqual([r['new'] for r in recs], [(960, 540)])
+            self.assertEqual(recs[0]['encoding'], 'lossless')
+
+
 @unittest.skipUnless(os.environ.get('VPH_TEST_WORD') == '1',
                      'drives Microsoft Word for Mac; set VPH_TEST_WORD=1 to run')
 class WordExportTests(unittest.TestCase):
