@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "visio-mac-rendering-fix"
-version = "0.7.0"
+version = "0.7.1"
 description = "Fix Visio (EMF+) figures in Office files: wrong rendering in Office for Mac, and low-resolution pictures and rasterised SVGs in Word PDF exports."
 readme = "README.md"
 license = {text = "MIT"}

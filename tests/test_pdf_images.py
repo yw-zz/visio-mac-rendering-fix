@@ -156,6 +156,45 @@ class PlainPictureTests(unittest.TestCase):
             self.assertEqual(recs[0]['encoding'], 'lossless')
 
 
+@unittest.skipIf(fitz is None or not pdf_images.HAVE_DEPS, 'PyMuPDF / Pillow / numpy not installed')
+class CollisionTests(unittest.TestCase):
+    def _pdf(self, items):
+        doc = fitz.open(); page = doc.new_page()
+        for (x, y), text, size in items:
+            page.insert_text((x, y), text, fontsize=size)
+        return doc
+
+    def test_overlapping_text_is_reported(self):
+        """A table frame drawn on top of a figure's labels (what Word does when two frames collide)."""
+        doc = self._pdf([((72, 100), 'TABLE I. IN-VITRO UPLINK BER', 9),
+                         ((80, 101), 'Implant Synchronized Clock Recovery', 9)])
+        hits = pdf_images.text_collisions(doc)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0][0], 1)
+
+    def test_normal_layout_is_clean(self):
+        """Consecutive lines, a subscript next to its base text and side-by-side columns do not count."""
+        doc = self._pdf([((72, 100), 'The uplink driver drives the coil resonator', 10),
+                         ((72, 111.5), 'via an on-chip AC-coupling capacitor bank', 10),
+                         ((72, 123), 'CLK', 10), ((92, 125), 'ref', 6.5),
+                         ((320, 100), 'Fig. 10 snapshots the operation', 10)])
+        self.assertEqual(pdf_images.text_collisions(doc), [])
+
+
+class MissingExtraTests(unittest.TestCase):
+    def test_friendly_message_without_pdf_extra(self):
+        """Without the [pdf] extra the command explains what to install instead of crashing."""
+        import subprocess
+        code = ("import sys; sys.modules['PIL'] = None; sys.modules['numpy'] = None; "
+                "sys.path.insert(0, sys.argv[1]); "
+                "from visio_mac_rendering_fix import pdf_images; "
+                "sys.exit(pdf_images.main(['paper.docx']))")
+        r = subprocess.run([sys.executable, '-c', code, os.path.join(HERE, '..', 'src')],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("pip install 'visio-mac-rendering-fix[pdf]'", r.stderr)
+
+
 @unittest.skipUnless(os.environ.get('VPH_TEST_WORD') == '1',
                      'drives Microsoft Word for Mac; set VPH_TEST_WORD=1 to run')
 class WordExportTests(unittest.TestCase):

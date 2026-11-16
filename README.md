@@ -85,6 +85,10 @@ On Windows, or for a `.pptx` / `.xlsx`, export the PDF yourself and give it both
 visio-pdf-hires paper.docx paper.pdf
 ```
 
+### Layout check
+
+Before restoring pictures, the tool checks Word's export for text drawn on top of other text and warns, naming the page and the colliding words. That is the symptom of a Word layout problem the PDF would otherwise hide in plain sight: Word does not keep floating objects (frames, floating tables, anchored pictures) from overlapping. A typical case is a two-column paper whose figures are frames aligned to the top of a column. When an edit shortens the text above (for example, replacing the author block with a one-line placeholder for a blind submission), a frame's anchor can move back onto a page whose column top is already taken, and Word draws both frames in the same place. To pin such a frame to the following page, turn on **Page break before** for its first paragraph (Format › Paragraph › Line and Page Breaks).
+
 ### How it works
 
 Word's PDF export resamples every bitmap inside an EMF figure (photos, scope or simulator screenshots pasted into Visio) to about 200 ppi and often JPEG-compresses it, so thin traces turn blurry and blocky. The originals are still stored losslessly in each figure's EMF+ layer inside the `.docx`. The tool:

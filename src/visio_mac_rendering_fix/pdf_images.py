@@ -201,7 +201,8 @@ def similarity(pdf_img, cand):
 def is_photo(im):
     """Photographs compress far better as JPEG; screenshots and line art stay lossless."""
     small = im.resize((min(im.width, 256), min(im.height, 256)))
-    return len(set(small.getdata())) > 6000
+    pixels = small.get_flattened_data() if hasattr(small, 'get_flattened_data') else small.getdata()
+    return len(set(pixels)) > 6000
 
 def write_image(doc, xref, src, smask=0, jpeg=None, lossless=None):
     """Overwrite image XObject `xref` in place with `src`. If the PDF image had a soft mask
@@ -260,10 +261,12 @@ def embedded_originals(z):
     return out
 
 
-_ORIENT = [(None, 'as is'), (Image.Transpose.ROTATE_180, 'rotated 180'),
-           (Image.Transpose.FLIP_LEFT_RIGHT, 'mirrored'), (Image.Transpose.FLIP_TOP_BOTTOM, 'flipped'),
-           (Image.Transpose.ROTATE_90, 'rotated 90'), (Image.Transpose.ROTATE_270, 'rotated 270'),
-           (Image.Transpose.TRANSPOSE, 'transposed'), (Image.Transpose.TRANSVERSE, 'transversed')]
+def _orientations():
+    """The 8 ways a picture can be rotated or mirrored (built on demand: PIL is optional)."""
+    T = Image.Transpose
+    return [(None, 'as is'), (T.ROTATE_180, 'rotated 180'), (T.FLIP_LEFT_RIGHT, 'mirrored'),
+            (T.FLIP_TOP_BOTTOM, 'flipped'), (T.ROTATE_90, 'rotated 90'), (T.ROTATE_270, 'rotated 270'),
+            (T.TRANSPOSE, 'transposed'), (T.TRANSVERSE, 'transversed')]
 
 
 def upgrade_draws(figures, originals, min_similarity, log):
@@ -277,7 +280,7 @@ def upgrade_draws(figures, originals, min_similarity, log):
             for k, o in enumerate(originals):
                 if o['img'].width * o['img'].height < 1.5 * img.width * img.height:
                     continue
-                for op, label in _ORIENT:
+                for op, label in _orientations():
                     w, h = o['img'].size if op in (None, Image.Transpose.ROTATE_180, Image.Transpose.FLIP_LEFT_RIGHT,
                                                     Image.Transpose.FLIP_TOP_BOTTOM) else o['img'].size[::-1]
                     if abs(w / h - img.width / img.height) > 0.02 * img.width / img.height:
@@ -371,6 +374,60 @@ def svg_pictures(z):
 
 
 # ------------------------------------------------------------------ main
+# ------------------------------------------------------------------ layout check
+
+def text_collisions(pdf, min_overlap=0.3):
+    """Pieces of text that sit on top of other text, as [(page, text_a, text_b)].
+
+    Word does not stop floating objects (frames, floating tables, anchored pictures) from
+    overlapping: when an edit moves an object's anchor to a page that already has an object in
+    the same place (typically two frames aligned to the top of the same column), Word draws one
+    over the other without warning. Overlapping text is a reliable symptom; text never overlaps
+    in a sound layout. Each span's box is trimmed to its glyph core first, so touching lines and
+    sub/superscripts do not count."""
+    doc = fitz.open(pdf) if isinstance(pdf, str) else pdf
+    found = []
+    for pno, page in enumerate(doc):
+        spans = []
+        for b in page.get_text('dict')['blocks']:
+            for line in b.get('lines', ()):
+                for sp in line['spans']:
+                    t = sp['text'].strip()
+                    if not t:
+                        continue
+                    r = fitz.Rect(sp['bbox'])
+                    h = r.height
+                    r = fitz.Rect(r.x0 + 0.5, r.y0 + 0.25 * h, r.x1 - 0.5, r.y1 - 0.25 * h)
+                    if not r.is_empty:
+                        spans.append((r, t))
+        spans.sort(key=lambda s: s[0].y0)
+        for i, (a, ta) in enumerate(spans):
+            for b, tb in spans[i + 1:]:
+                if b.y0 >= a.y1:
+                    break
+                x = a & b
+                if not x.is_empty and x.get_area() > min_overlap * min(a.get_area(), b.get_area()):
+                    found.append((pno + 1, ta, tb))
+    return found
+
+
+def report_collisions(pdf, log=print):
+    """Warn about overlapping text in `pdf` (see text_collisions). Returns the collisions."""
+    hits = text_collisions(pdf)
+    if hits:
+        pages = sorted({p for p, _, _ in hits})
+        log(f'warning: text overlaps other text on page(s) {", ".join(map(str, pages))}: Word has placed '
+            f'floating objects (frames, tables, pictures) on top of each other')
+        for p, a, b in hits[:5]:
+            log(f'  page {p}: "{a[:40]}" overlaps "{b[:40]}"')
+        if len(hits) > 5:
+            log(f'  ... {len(hits) - 5} more')
+        log('  Usually a frame aligned to the top of a column moved onto a page whose column top is '
+            'already taken. Fix it in Word, e.g. turn on "Page break before" for the first paragraph '
+            'of the moved frame, so it starts on the next page.')
+    return hits
+
+
 def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print, max_ppi=1200):
     """Write `out`: `pdf` with its images replaced by the full-resolution originals found in
     `source` (the Office file it was exported from). Returns a list of replacement records."""
@@ -604,6 +661,7 @@ def main(argv=None):
             pages = word_export.export_docx_to_pdf(source, pdf, markup=a.keep_markup)
             if pages:
                 log(f'  Word laid the document out on {pages} page(s)')
+        report_collisions(pdf, log=lambda *m: print(*m, file=sys.stderr))
         restore_pdf_images(pdf, source, out, a.min_similarity, log=log, max_ppi=a.max_ppi)
     except Exception as e:                      # ExportError, ValueError, OSError, BadZipFile
         print(f'error: {e}', file=sys.stderr)

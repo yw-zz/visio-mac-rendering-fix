@@ -1,7 +1,11 @@
 """Locate installed font files by family name and style."""
+import logging
 import os
 import sys
 from fontTools.ttLib import TTFont, TTCollection
+
+# system fonts often have harmless quirks (odd 'created' dates, padding) that fontTools logs
+logging.getLogger('fontTools').setLevel(logging.ERROR)
 
 def default_font_dirs():
     home = os.path.expanduser('~')

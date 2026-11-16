@@ -183,10 +183,12 @@ def image(x, y, w, h, im, obj_id=1, attr_id=2):
     bitmap = struct.pack('<IIiiiII', 0xDBC01002, 1, im.width, im.height, 0, 0x0026200A, 1) + png
     out = [plus_comment(plus(0x4008, (8 << 8) | attr_id,                      # ImageAttributes object
                              struct.pack('<6I', 0xDBC01002, 0, 0, 0, 0, 0)))]
-    chunk = 65000
+    chunk = 65000                                                            # multiple of 4
+    total = len(bitmap)                                                      # TotalObjectSize: true length
+    bitmap += b'\x00' * (-total % 4)                                         # EMF+ records are 4-byte aligned
     for i in range(0, len(bitmap), chunk):                                   # continued Object records
         out.append(plus_comment(plus(0x4008, 0x8000 | (5 << 8) | obj_id,
-                                     struct.pack('<I', len(bitmap)) + bitmap[i:i + chunk])))
+                                     struct.pack('<I', total) + bitmap[i:i + chunk])))
     out.append(plus_comment(plus(0x401B, obj_id, struct.pack('<II4fI', attr_id, 2, -0.5, -0.5, im.width, im.height, 3)
                                  + struct.pack('<6f', x, y, x + w, y, x, y + h))))
     # GDI fallback: 24-bit bottom-up DIB
