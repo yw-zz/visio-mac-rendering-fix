@@ -100,6 +100,45 @@ class CommandLineTests(unittest.TestCase):
                     pdf_images.main(args + ['-q'])
 
 
+@unittest.skipIf(fitz is None or not pdf_images.HAVE_DEPS, 'PyMuPDF / Pillow / numpy not installed')
+class EmbeddedOriginalTests(unittest.TestCase):
+    def test_src_box_pixel_centre_convention(self):
+        dr = dict(img=Image.new('RGB', (707, 442)), src=(-0.5, -0.5, 707, 442))
+        self.assertEqual(pdf_images._src_box(dr), (0, 0, 707, 442))
+
+    def test_uses_larger_original_from_embedded_visio_drawing(self):
+        """Visio shrinks pictures in a figure's preview; the full-size original (stored flipped
+        relative to the preview here) is inside the embedded .vsdx and should be used."""
+        full = make_demo.scope_capture()                                  # 960 x 540
+        preview = full.resize((480, 270), Image.LANCZOS).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        orig_scope = make_demo.scope_capture
+        make_demo.scope_capture = lambda: preview
+        try:
+            emf = make_demo.make_emf()
+        finally:
+            make_demo.scope_capture = orig_scope
+        vsdx = io.BytesIO()
+        with zipfile.ZipFile(vsdx, 'w') as v:
+            buf = io.BytesIO(); full.save(buf, 'PNG')
+            v.writestr('visio/media/image1.png', buf.getvalue())
+        blurry = io.BytesIO(); preview.resize((240, 135), Image.LANCZOS).save(blurry, 'PNG')
+        with tempfile.TemporaryDirectory() as d:
+            src, pdf, out = (os.path.join(d, n) for n in ('a.docx', 'a.pdf', 'a_hires.pdf'))
+            with zipfile.ZipFile(src, 'w') as z:
+                z.writestr('word/media/image1.emf', emf)
+                z.writestr('word/embeddings/Microsoft_Visio_Drawing.vsdx', vsdx.getvalue())
+            doc = fitz.open()
+            doc.new_page().insert_image(fitz.Rect(100, 100, 420, 280), stream=blurry.getvalue())
+            doc.save(pdf)
+            recs = pdf_images.restore_pdf_images(pdf, src, out, log=lambda *_: None, max_ppi=0)
+            self.assertEqual(len(recs), 1)
+            self.assertEqual(recs[0]['new'], (960, 540))
+            self.assertIn('vsdx', recs[0]['source'])
+            capped = os.path.join(d, 'capped.pdf')
+            recs = pdf_images.restore_pdf_images(pdf, src, capped, log=lambda *_: None, max_ppi=150)
+            self.assertEqual(recs[0]['new'][0], round(960 * 150 / (960 / (320 / 72))))   # 320 pt wide at 150 ppi
+
+
 @unittest.skipUnless(os.environ.get('VPH_TEST_WORD') == '1',
                      'drives Microsoft Word for Mac; set VPH_TEST_WORD=1 to run')
 class WordExportTests(unittest.TestCase):

@@ -150,6 +150,15 @@ def _dest_bbox(dr):
     ys = [P0[1], P1[1], P2[1], P1[1] + P2[1] - P0[1]]
     return (min(xs), min(ys), max(xs), max(ys))
 
+def _src_box(dr):
+    """Pixel box of a draw's source rectangle. GDI+ source rectangles use the pixel-centre
+    convention: (-0.5, -0.5, w, h) is the whole w x h image."""
+    sx, sy, sw, sh = dr['src']
+    W, H = dr['img'].size
+    return (max(0, round(sx + 0.5)), max(0, round(sy + 0.5)),
+            min(W, round(sx + 0.5 + sw)), min(H, round(sy + 0.5 + sh)))
+
+
 def _crop_for_device_rect(dr, R):
     """Source-pixel box showing device rectangle R of draw dr (None if degenerate)."""
     (P0, P1, P2), (sx, sy, sw, sh) = dr['pts'], dr['src']
@@ -161,7 +170,7 @@ def _crop_for_device_rect(dr, R):
     for X, Y in ((R[0], R[1]), (R[2], R[1]), (R[0], R[3]), (R[2], R[3])):
         a = ((X - P0[0]) * uy[1] - (Y - P0[1]) * uy[0]) / det
         b = ((Y - P0[1]) * ux[0] - (X - P0[0]) * ux[1]) / det
-        us.append(sx + a * sw); vs.append(sy + b * sh)
+        us.append(sx + 0.5 + a * sw); vs.append(sy + 0.5 + b * sh)      # pixel-edge coordinates
     img = dr['img']
     box = (max(0, round(min(us))), max(0, round(min(vs))),
            min(img.width, round(max(us))), min(img.height, round(max(vs))))
@@ -194,7 +203,7 @@ def is_photo(im):
     small = im.resize((min(im.width, 256), min(im.height, 256)))
     return len(set(small.getdata())) > 6000
 
-def write_image(doc, xref, src, smask=0):
+def write_image(doc, xref, src, smask=0, jpeg=None, lossless=None):
     """Overwrite image XObject `xref` in place with `src`. If the PDF image had a soft mask
     (`smask` xref), the mask is rewritten from src's alpha; otherwise src is flattened on white.
     Returns the encoding used."""
@@ -213,7 +222,9 @@ def write_image(doc, xref, src, smask=0):
     else:
         doc.xref_set_key(xref, 'SMask', 'null')
         im = on_white(rgba)
-    if is_photo(im):
+    if jpeg is not None and not smask:
+        data, filt, kind = jpeg, '/DCTDecode', 'original JPEG'
+    elif lossless is False or (lossless is None and is_photo(im)):
         buf = io.BytesIO(); im.save(buf, 'JPEG', quality=95, subsampling=0)
         data, filt, kind = buf.getvalue(), '/DCTDecode', 'JPEG q95'
     else:
@@ -223,6 +234,75 @@ def write_image(doc, xref, src, smask=0):
                      ('BitsPerComponent', '8'), ('Filter', filt)):
         doc.xref_set_key(xref, key, val)
     return kind
+
+
+def embedded_originals(z):
+    """Raster images inside OLE packages embedded in an Office file (e.g. the .vsdx behind a
+    Visio figure). Visio shrinks large pictures when it writes the figure's preview, but keeps
+    the full-size original in the drawing. Returns [{name, img, raw, fmt}]."""
+    out = []
+    for n in z.namelist():
+        if '/embeddings/' not in n or not n.lower().endswith(('.vsdx', '.vsdm', '.vstx', '.xlsx', '.pptx', '.docx')):
+            continue
+        try:
+            inner = zipfile.ZipFile(io.BytesIO(z.read(n)))
+        except zipfile.BadZipFile:
+            continue
+        for m in inner.namelist():
+            if '/media/' not in m or not m.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff')):
+                continue
+            raw = inner.read(m)
+            try:
+                im = Image.open(io.BytesIO(raw)); im.load()
+            except Exception:
+                continue
+            out.append(dict(name=n.split('/')[-1] + ':' + m.split('/')[-1], img=im, raw=raw, fmt=im.format))
+    return out
+
+
+_ORIENT = [(None, 'as is'), (Image.Transpose.ROTATE_180, 'rotated 180'),
+           (Image.Transpose.FLIP_LEFT_RIGHT, 'mirrored'), (Image.Transpose.FLIP_TOP_BOTTOM, 'flipped'),
+           (Image.Transpose.ROTATE_90, 'rotated 90'), (Image.Transpose.ROTATE_270, 'rotated 270'),
+           (Image.Transpose.TRANSPOSE, 'transposed'), (Image.Transpose.TRANSVERSE, 'transversed')]
+
+
+def upgrade_draws(figures, originals, min_similarity, log):
+    """Swap each preview picture for a larger embedded original showing the same picture
+    (in any of the 8 orientations), so later passes restore the full-size version."""
+    thumbs = {}
+    for fig, draws in figures.items():
+        for dr in draws:
+            img = dr['img']
+            best = None
+            for k, o in enumerate(originals):
+                if o['img'].width * o['img'].height < 1.5 * img.width * img.height:
+                    continue
+                for op, label in _ORIENT:
+                    w, h = o['img'].size if op in (None, Image.Transpose.ROTATE_180, Image.Transpose.FLIP_LEFT_RIGHT,
+                                                    Image.Transpose.FLIP_TOP_BOTTOM) else o['img'].size[::-1]
+                    if abs(w / h - img.width / img.height) > 0.02 * img.width / img.height:
+                        continue
+                    key = (k, label, img.size)
+                    if key not in thumbs:
+                        t = o['img'] if op is None else o['img'].transpose(op)
+                        thumbs[key] = on_white(t.convert('RGBA').resize(img.size, Image.LANCZOS))
+                    sc = similarity(on_white(img), thumbs[key])
+                    if sc >= min_similarity and (best is None or sc > best[0]):
+                        best = (sc, k, op, label)
+            if best:
+                sc, k, op, label = best
+                o = originals[k]
+                big = o['img'] if op is None else o['img'].transpose(op)
+                f = big.width / img.width
+                sx, sy, sw, sh = dr['src']             # pixel-centre convention: edges at sx + 0.5
+                dr['src'] = ((sx + 0.5) * f - 0.5, (sy + 0.5) * f - 0.5, sw * f, sh * f)
+                dr['img'] = big
+                if op is None and o['fmt'] == 'JPEG':
+                    dr['jpeg'] = o['raw']
+                dr['lossless'] = o['fmt'] != 'JPEG'          # keep line art / renders lossless
+                dr['upgraded'] = o['name']
+                log(f'  {fig.split("/")[-1]}: {img.width}x{img.height} preview picture -> '
+                    f'{big.width}x{big.height} original from {o["name"]} ({label}, match {sc:.3f})')
 
 
 def svg_pictures(z):
@@ -269,7 +349,7 @@ def svg_pictures(z):
 
 
 # ------------------------------------------------------------------ main
-def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
+def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print, max_ppi=1200):
     """Write `out`: `pdf` with its images replaced by the full-resolution originals found in
     `source` (the Office file it was exported from). Returns a list of replacement records."""
     if not HAVE_DEPS:
@@ -282,12 +362,19 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
             if n.lower().endswith('.emf'):
                 draws = emfplus_draws(z.read(n))
                 for dr in draws:
-                    dr['rgba'] = dr['img'].convert('RGBA').crop(tuple(map(round, (
-                        dr['src'][0], dr['src'][1], dr['src'][0] + dr['src'][2], dr['src'][1] + dr['src'][3]))))
+                    dr['rgba'] = dr['img'].convert('RGBA').crop(_src_box(dr))
                     dr['full'] = on_white(dr['rgba'])
                 if draws:
                     figures[n] = draws
         svgs = svg_pictures(z)
+        originals = embedded_originals(z)
+    if originals:
+        upgrade_draws(figures, originals, min_similarity, log)
+    for draws in figures.values():
+        for dr in draws:
+            if dr.get('upgraded'):
+                dr['rgba'] = dr['img'].convert('RGBA').crop(_src_box(dr))
+                dr['full'] = on_white(dr['rgba'])
     log(f'{sum(len(v) for v in figures.values())} original images in {len(figures)} figures'
         + (f', {len(svgs)} SVG picture(s)' if svgs else ''))
 
@@ -311,14 +398,26 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
             todo.append((pno, xref, rects[0], on_white(im), info['ext'], smask))
 
     done, anchors, records = {}, {}, []                        # anchors: (figure, page) -> [(device bbox, page rect)]
-    def replace(pno, xref, rect, pim, ext, smask, new, score, label):
+    def replace(pno, xref, rect, pim, ext, smask, new, score, label, jpeg=None, lossless=None):
         if xref in done or new.width * new.height <= pim.width * pim.height * 1.2:
             return False
-        kind = write_image(doc, xref, new, smask)
+        if max_ppi:
+            # resolution on the page, from the largest placement (rotation-aware)
+            sizes = [math.hypot(m.a, m.b) for _, m in doc[pno].get_image_rects(xref, transform=True)]
+            if sizes and max(sizes) > 0:
+                ppi = new.width / (max(sizes) / 72)
+                if ppi > max_ppi:
+                    f = max_ppi / ppi
+                    new = new.resize((max(1, round(new.width * f)), max(1, round(new.height * f))), Image.LANCZOS)
+                    jpeg = None
+                    if new.width * new.height <= pim.width * pim.height * 1.2:
+                        return False
+        kind = write_image(doc, xref, new, smask, jpeg, lossless)
         records.append(dict(page=pno + 1, xref=xref, old=pim.size, new=new.size, encoding=kind,
                             source=label, score=score))
-        log(f'  page {pno + 1}: {pim.width}x{pim.height} {ext} (~{pim.width / (rect.width / 72):.0f} ppi) -> '
-              f'{new.width}x{new.height} {kind} (~{new.width / (rect.width / 72):.0f} ppi)  [{label}, match {score:.3f}]')
+        wpt = max([math.hypot(m.a, m.b) for _, m in doc[pno].get_image_rects(xref, transform=True)] or [rect.width])
+        log(f'  page {pno + 1}: {pim.width}x{pim.height} {ext} (~{pim.width / (wpt / 72):.0f} ppi) -> '
+              f'{new.width}x{new.height} {kind} (~{new.width / (wpt / 72):.0f} ppi)  [{label}, match {score:.3f}]')
         done[xref] = True
         return True
 
@@ -329,7 +428,10 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
         if best and best[0] >= min_similarity:
             score, fig, dr = best
             anchors.setdefault((fig, pno), []).append((_dest_bbox(dr), rect))
-            replace(pno, xref, rect, pim, ext, smask, dr['rgba'], score, fig.split('/')[-1])
+            full_src = dr['src'][0] <= 0 and dr['src'][1] <= 0 and dr['rgba'].size == dr['img'].size
+            replace(pno, xref, rect, pim, ext, smask, dr['rgba'], score,
+                    fig.split('/')[-1] + (' via ' + dr['upgraded'] if dr.get('upgraded') else ''),
+                    jpeg=dr.get('jpeg') if full_src else None, lossless=dr.get('lossless'))
 
     # pass 2: map each remaining image's page rectangle back into the figure (handles crops)
     for pno, xref, rect, pim, ext, smask in todo:
@@ -358,13 +460,13 @@ def restore_pdf_images(pdf, source, out, min_similarity=0.97, log=print):
                 ix = max(0, min(R[2], D[2]) - max(R[0], D[0])) * max(0, min(R[3], D[3]) - max(R[1], D[1]))
                 iou = ix / ((R[2] - R[0]) * (R[3] - R[1]) + (D[2] - D[0]) * (D[3] - D[1]) - ix)
                 if best is None or sc > best[0]:
-                    best = (sc, fig, cand, box, iou)
+                    best = (sc, fig, cand, box, iou, dr.get('lossless'))
         # position on the page is independent evidence: an image sitting exactly where an original
         # is drawn needs less pixel agreement (thin traces lose a lot when downsampled)
         need = min_similarity if not best or best[4] < 0.97 else min(min_similarity, 0.90)
         if best and best[0] >= need:
             label = best[1].split('/')[-1] + ('' if best[4] >= 0.97 else f' crop {best[3]}')
-            replace(pno, xref, rect, pim, ext, smask, best[2], best[0], label + f', position match {best[4]:.2f}')
+            replace(pno, xref, rect, pim, ext, smask, best[2], best[0], label + f', position match {best[4]:.2f}', lossless=best[5])
         elif best and best[0] > 0.5:
             log(f'  page {pno + 1}: {pim.width}x{pim.height} closest original only {best[0]:.3f}, left as is')
 
@@ -423,6 +525,8 @@ def main(argv=None):
                     help='when exporting with Word, keep the current tracked-change markup view')
     ap.add_argument('--min-similarity', type=float, default=0.97,
                     help='how closely a replacement must resemble the image it replaces (default 0.97)')
+    ap.add_argument('--max-ppi', type=int, default=1200,
+                    help='downsample restored pictures above this resolution on the page (default 1200; 0 = no limit)')
     ap.add_argument('-q', '--quiet', action='store_true')
     a = ap.parse_args(argv)
     log = (lambda *_: None) if a.quiet else print
@@ -467,7 +571,7 @@ def main(argv=None):
             pages = word_export.export_docx_to_pdf(source, pdf, markup=a.keep_markup)
             if pages:
                 log(f'  Word laid the document out on {pages} page(s)')
-        restore_pdf_images(pdf, source, out, a.min_similarity, log=log)
+        restore_pdf_images(pdf, source, out, a.min_similarity, log=log, max_ppi=a.max_ppi)
     except Exception as e:                      # ExportError, ValueError, OSError, BadZipFile
         print(f'error: {e}', file=sys.stderr)
         return 1

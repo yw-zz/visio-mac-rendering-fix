@@ -90,8 +90,9 @@ visio-pdf-hires paper.docx paper.pdf
 Word's PDF export resamples every bitmap inside an EMF figure (photos, scope or simulator screenshots pasted into Visio) to about 200 ppi and often JPEG-compresses it, so thin traces turn blurry and blocky. The originals are still stored losslessly in each figure's EMF+ layer inside the `.docx`. The tool:
 
 1. reads every embedded bitmap and where each figure draws it;
-2. matches each picture in the PDF to its original, by appearance and, for pictures Word cropped or squeezed, by position on the page;
-3. swaps in the original pixels: screenshots and line art stay lossless, photos become high-quality JPEG, and transparency masks are kept.
+2. looks for a **larger original inside the embedded Visio drawing**: when Visio writes a figure's preview it shrinks big pictures (a 2828 × 1767 render can end up as 707 × 442, which breaks up thin lines), but the drawing itself (the `.vsdx` stored in the `.docx`) keeps the full-size file. Originals are matched by appearance in any rotation or mirror orientation;
+3. matches each picture in the PDF to its original, by appearance and, for pictures Word cropped or squeezed, by position on the page;
+4. swaps in the original pixels: lossless sources (PNG renders, screenshots, line art) stay lossless, JPEG photos stay JPEG, and transparency masks are kept. Pictures above `--max-ppi` (default 1200, which is beyond print quality) are scaled down to it to keep the file size reasonable; `--max-ppi 0` keeps full size.
 
 Vector content (lines, shapes, text) is never touched, nor are pictures it cannot match confidently (`--min-similarity`, default 0.97). The page layout is unchanged; only the pictures get sharper. The PDF grows by the size of the restored pictures.
 
